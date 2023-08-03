@@ -1,0 +1,169 @@
+---
+title: 'Predictive Discussion 5'
+author: "Han Liu"
+date: "08/03/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+
+rm(list = ls()) 
+gc()            
+
+
+packages <- c("dplyr",
+              "tidyverse",
+              "tsibble",
+              "lubridate",
+              "fpp3",
+              "ggplot2",
+              "feasts",
+              "quantmod")
+
+for (i in 1:length(packages)) {
+  if (!packages[i] %in% rownames(installed.packages())) {
+    install.packages(packages[i]
+                     , repos = "http://cran.rstudio.com/"
+                     , dependencies = TRUE
+    )
+  }
+  library(packages[i], character.only = TRUE)
+}
+
+```
+
+## Selecting Stocks and Creating Hierarchical Time Series
+
+
+```{r cars}
+
+here <- getSymbols(c("ANET", "TSLA", "PFE", "META"), src = "yahoo", from = "2018-01-01", to = "2022-12-31", 
+         auto.assign = TRUE, periodicity = 'monthly')
+
+
+total=as.data.frame(cbind(ANET$ANET.Adjusted, TSLA$TSLA.Adjusted, PFE$PFE.Adjusted, META$META.Adjusted))
+
+
+total[2:60,]=1+(total[2:60,]-total[1:59,])/total[1:59,] 
+for (i in 2:60) total[i,]=total[i-1, ]*total[i,]
+
+
+total$Date=yearmonth(seq(as.Date("2018-01-01"), as.Date("2022/12/31"), by="months"))
+colnames(total)[1] ="ANET"
+colnames(total)[2] ="TSLA"
+colnames(total)[3] ="PFE"
+colnames(total)[4] ="METK"
+
+train=total[1:48,]
+test=total[49:60,]
+
+
+myts=total%>%as_tsibble(index=Date)
+traints=train%>%as_tsibble(index=Date)
+testts=test%>%as_tsibble(index=Date)
+
+temp=myts%>%pivot_longer(!c(Date), names_to='Stock', values_to='Value')
+train=traints%>%pivot_longer(!c(Date), names_to='Stock', values_to='Value')
+test=testts%>%pivot_longer(!c(Date), names_to='Stock', values_to='Value')
+
+temp$Sector=rep('Tech', nrow(temp))
+train$Sector=rep('Tech', nrow(train))
+test$Sector=rep('Tech', nrow(test))
+
+temp$Sector[temp$Stock=="PFE"|temp$Stock=="MRK"]="Healthcare"
+train$Sector[train$Stock=="PFE"|train$Stock=="MRK"]="Healthcare"
+test$Sector[test$Stock=="PFE"|test$Stock=="MRK"]="Healthcare"
+
+
+
+```
+
+## Overview of Data
+
+```{r overview}
+
+temp%>%autoplot()
+
+
+```
+
+
+## Aggregate Time Series for Plotting 
+
+```{r aggregate}
+
+myagg <- temp |>
+  aggregate_key(Stock/Sector,Value=sum(Value))
+myagg
+
+myagg%>%filter(is_aggregated(Sector))%>%
+  autoplot(Value) +
+  labs(y = "Value", x="Date",
+       title = "Investment Value") +
+  facet_wrap(vars(Stock), scales = "free_y", ncol = 3) +
+  theme(legend.position = "none")
+```
+
+
+## Bottom Up Forecast
+```{r bottom up}
+myagg2 <- train |>aggregate_key(Stock,Value=mean(Value))
+m1=myagg2|> model(ets = ETS(Value))|>reconcile(bu = bottom_up(ets))
+aug1=m1%>%augment()
+f1=m1%>%forecast(h=12)
+f1%>%autoplot(temp)
+
+```
+
+
+
+## Middle Out Forecast 
+
+```{r middleout}
+
+acc1=f1%>%accuracy(test |>aggregate_key(Stock,Value=mean(Value)))
+
+myagg3 <-train |>aggregate_key(Sector/Stock,Value=mean(Value))
+m2=myagg3|>  model(ets2 = ETS(Value)) |>  reconcile(md = middle_out(ets2))
+f2=m2%>%forecast(h=12)
+f2%>%autoplot(temp%>%aggregate_key(Sector/Stock,Value=mean(Value)))+facet_wrap(~Stock+Sector)
+
+
+```
+
+
+## Top Down Forecast  
+
+```{r topdown}
+
+myagg4 <-train |>aggregate_key(Sector/Stock,Value=mean(Value))
+m3=myagg4|>  model(ets3 = ETS(Value)) |>  reconcile(td = top_down(ets3))
+f3=m3%>%forecast(h=12)
+f3%>%autoplot(temp%>%aggregate_key(Sector/Stock,Value=mean(Value)))+facet_wrap(~Stock+Sector)
+
+acc3=f3%>%accuracy(test|>aggregate_key(Sector/Stock,Value=mean(Value)))
+
+```
+
+
+## Minimum Trace Reconciliation 
+```{r Mint}
+myagg5 <-train |>aggregate_key(Sector/Stock,Value=mean(Value))
+m5=myagg5|>  model(ets5 = ETS(Value)) |>  reconcile(mint = min_trace(ets5))
+f5=m5%>%forecast(h=12)
+f5%>%autoplot(temp%>%aggregate_key(Sector/Stock,Value=mean(Value)))+facet_wrap(~Stock+Sector)
+
+acc5=f5%>%accuracy(test|>aggregate_key(Sector/Stock,Value=mean(Value)))
+
+glance(m1)
+
+glance(m2)
+
+glance(m3)
+
+glance(m5)
+
+```
+
